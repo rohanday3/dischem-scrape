@@ -43,15 +43,16 @@ The scraper will collect product information from the Dischem website and save i
 Web scraping of product information from Dischem's website.
 Customizable category selection.
 Data is saved to a CSV file for further analysis.
-Contributing
-If you'd like to contribute to this project, please follow these guidelines:
 
-Fork the repository.
-Create a new branch.
-Make your changes.
-Commit your changes with clear and concise messages.
-Push your changes to your branch.
-Create a pull request.
+### Contributing
+If you'd like to contribute to this project, please follow these guidelines:<br>
+
+Fork the repository.<br>
+Create a new branch.<br>
+Make your changes.<br>
+Commit your changes with clear and concise messages.<br>
+Push your changes to your branch.<br>
+Create a pull request.<br>
 
 ### License
 This project is licensed under the MIT License. You can find the full license text in the LICENSE file.
