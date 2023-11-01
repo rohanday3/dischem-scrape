@@ -9,6 +9,7 @@ from tqdm import tqdm
 import aiohttp
 import asyncio
 import os
+import hashlib
 
 class DischemScraper:
     def __init__(self, categories=[]):
@@ -63,14 +64,18 @@ class DischemScraper:
         return products
     
     def get_product_links_per_page(self, url):
-        cache_file = os.path.join(self.cache_dir, url.replace('/', '_').replace(':', '_'))
+        url_hash = hashlib.md5(url.encode()).hexdigest()
+        cache_file = os.path.join(self.cache_dir, f"{url_hash}.txt")
 
         if os.path.exists(cache_file):
             with open(cache_file, 'r') as file:
                 products = [line.strip() for line in file.readlines()]
+                products = [{
+                    'name': product.split('/')[-1],
+                    'link': product,
+                } for product in products]
         else:
             page = requests.get(url)
-            soup = BeautifulSoup(page.content, 'html.parser')
             soup = BeautifulSoup(page.content, 'html.parser')
             products_div = soup.find('div', class_='products wrapper grid products-grid')
             products_ol = products_div.find('ol', class_='products list items product-items')
@@ -89,8 +94,7 @@ class DischemScraper:
                 })
             with open(cache_file, 'w') as file:
                 file.write('\n'.join([product['link'] for product in products]))
-
-    return products
+        return products
 
     def get_all_product_links_threaded(self, url):
         page = requests.get(url)
@@ -145,37 +149,40 @@ class DischemScraper:
             'normal_price': item_price_old,
         }
         return item_details
-    
-    async def get_product_info_async(self, session, url):
-        async with session.get(url) as response:
-            if response.status == 200:
-                page = requests.get(url)
-                soup = BeautifulSoup(page.content, 'html.parser')
-                prod_info_div = soup.find('div', class_='product info detailed')
-                item_description_div_p = prod_info_div.find('div', class_='product attribute description')
-                item_description = item_description_div_p.find('div', class_='value').text if item_description_div_p else ''
-                item_info_table = prod_info_div.find('table', class_='data table additional-attributes')
-                item_schedule_p = item_info_table.find('th', string='Product Drugschedule')
-                item_nappi_p = item_info_table.find('th', string='Product Nappi Code')
-                item_barcode_p = item_info_table.find('th', string='Product Main Barcode')
-                item_schedule = item_schedule_p.find_next_sibling('td').text if item_schedule_p else ''
-                item_nappi = item_nappi_p.find_next_sibling('td').text if item_nappi_p else ''
-                item_barcode = item_barcode_p.find_next_sibling('td').text if item_barcode_p else ''
-                item_price_current_div = soup.find('div', {'data-price-type': 'finalPrice'})
-                item_price_current = item_price_current_div['data-price-amount'] 
-                item_price_old_div = soup.find('div', {'data-price-type': 'oldPrice'})
-                item_price_old = item_price_old_div['data-price-amount'] if item_price_old_div else ''
-                item_details = {
-                    'description': item_description,
-                    'schedule': item_schedule,
-                    'nappi': item_nappi,
-                    'barcode': item_barcode,
-                    'current_price': item_price_current,
-                    'normal_price': item_price_old,
-                }
-                return item_details
-            else:
-                return None
+            
+    async def get_product_info_async(self, session, product, category_name):
+        url = product['link']
+        try:
+            async with session.get(url) as response:
+                if response.status == 200:
+                    page = await response.text()
+                    soup = BeautifulSoup(page.content, 'html.parser')
+                    prod_info_div = soup.find('div', class_='product info detailed')
+                    item_description_div_p = prod_info_div.find('div', class_='product attribute description')
+                    item_description = item_description_div_p.find('div', class_='value').text if item_description_div_p else ''
+                    item_info_table = prod_info_div.find('table', class_='data table additional-attributes')
+                    item_schedule_p = item_info_table.find('th', string='Product Drugschedule')
+                    item_nappi_p = item_info_table.find('th', string='Product Nappi Code')
+                    item_barcode_p = item_info_table.find('th', string='Product Main Barcode')
+                    item_schedule = item_schedule_p.find_next_sibling('td').text if item_schedule_p else ''
+                    item_nappi = item_nappi_p.find_next_sibling('td').text if item_nappi_p else ''
+                    item_barcode = item_barcode_p.find_next_sibling('td').text if item_barcode_p else ''
+                    item_price_current_div = soup.find('div', {'data-price-type': 'finalPrice'})
+                    item_price_current = item_price_current_div['data-price-amount'] 
+                    item_price_old_div = soup.find('div', {'data-price-type': 'oldPrice'})
+                    item_price_old = item_price_old_div['data-price-amount'] if item_price_old_div else ''
+                    item_details = {
+                        'description': item_description,
+                        'schedule': item_schedule,
+                        'nappi': item_nappi,
+                        'barcode': item_barcode,
+                        'current_price': item_price_current,
+                        'normal_price': item_price_old,
+                    }
+                    return item_details
+        except asyncio.TimeoutError:
+            print(f"Timeout while fetching product info for {product['name']}, URL: {url}")
+            return None
 
     async def get_all_product_info_async(self, url, category_name=''):
         products, err_pages = self.get_all_product_links_threaded(url)
@@ -183,10 +190,23 @@ class DischemScraper:
         async with aiohttp.ClientSession() as session:
             tasks = []
             for product in products:
-                task = asyncio.ensure_future(self.get_product_info_async(session, product['link']))
+                task = asyncio.ensure_future(self.get_product_info_async(session, product, category_name))
                 tasks.append(task)
 
+            product_info_list = []
+            progress_bar = tqdm_asyncio.tqdm(total=len(tasks), desc=f"Retrieving product info for {category_name}")
+
+            async def track_progress():
+                while True:
+                    progress_bar.n = len(product_info_list)
+                    progress_bar.refresh()
+                    await asyncio.sleep(1)
+
+            progress_task = asyncio.ensure_future(track_progress())
             product_info_list = await asyncio.gather(*tasks)
+            progress_task.cancel()
+
+        progress_bar.close()
 
         for i, product in enumerate(products):
             product_info = product_info_list[i]
@@ -197,11 +217,12 @@ class DischemScraper:
         return products, err_pages
 
     async def scrape_categories_async(self):
+        timeout = aiohttp.ClientTimeout(total=60*60)
         print('Total categories: ', len(self.categories))
         product_list = []
         err_info_list_all = []
 
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             tasks = []
             for category in self.categories:
                 print('Category: ', category['name'])
