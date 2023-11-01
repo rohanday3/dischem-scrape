@@ -8,9 +8,15 @@ from datetime import datetime
 from tqdm import tqdm
 
 class DischemScraper:
-    def __init__(self):
+    def __init__(self, categories=[]):
         self.base_url = 'https://www.dischem.co.za'
         self.categories = []
+        self.get_category_links()
+        print('Total categories: ', len(self.categories))
+        for category in self.categories:
+            print(category['name'])
+        if categories:
+            self.categories = [category for category in self.categories if category['name'] in categories]
 
     def get_category_links(self):
         page = requests.get(f'{self.base_url}/shop-by-department')
@@ -73,7 +79,7 @@ class DischemScraper:
             else:
                 err_pages.append(page_url)
 
-        with ThreadPoolExecutor(max_workers=8) as executor:
+        with ThreadPoolExecutor(max_workers=16) as executor:
             list(tqdm(executor.map(worker, range(1, num_pages + 1)), total=num_pages))
 
         return products, err_pages
@@ -91,11 +97,17 @@ class DischemScraper:
         item_schedule = item_schedule_p.find_next_sibling('td').text if item_schedule_p else ''
         item_nappi = item_nappi_p.find_next_sibling('td').text if item_nappi_p else ''
         item_barcode = item_barcode_p.find_next_sibling('td').text if item_barcode_p else ''
+        item_price_current_div = soup.find('div', {'data-price-type': 'finalPrice'})
+        item_price_current = item_price_current_div['data-price-amount'] 
+        item_price_old_div = soup.find('div', {'data-price-type': 'oldPrice'})
+        item_price_old = item_price_old_div['data-price-amount'] if item_price_old_div else ''
         item_details = {
             'description': item_description,
             'schedule': item_schedule,
             'nappi': item_nappi,
-            'barcode': item_barcode
+            'barcode': item_barcode,
+            'current_price': item_price_current,
+            'normal_price': item_price_old,
         }
         return item_details
 
@@ -104,34 +116,48 @@ class DischemScraper:
         # print('Total products downloaded: ', len(products))
         # print('Total error pages: ', len(err_pages))
         product_info_list = []
+        err_info_list = []
 
         def worker(product):
-            product_info = self.get_product_info(product['link'])
+            try:
+                product_info = self.get_product_info(product['link'])
+            except:
+                product_info = None
+            tries = 0
+            while not product_info and tries < 3:
+                try:
+                    product_info = self.get_product_info(product['link'])
+                except:
+                    product_info = None
+                tries += 1
             if product_info:
                 product.update(product_info)
                 product['category'] = category_name
                 product_info_list.append(product)
+            else:
+                err_info_list.append(product)
 
-        with ThreadPoolExecutor(max_workers=8) as executor:
+        with ThreadPoolExecutor(max_workers=16) as executor:
             list(tqdm(executor.map(worker, products), total=len(products)))
 
-        return product_info_list
+        return product_info_list, err_info_list
 
     def scrape_categories_threaded(self):
-        self.get_category_links()
         print('Total categories: ', len(self.categories))
         product_list = []
+        err_info_list_all = []
 
         def worker(category):
             print('Category: ', category['name'])
-            products = self.get_all_product_info_threaded(category['link'], category['name'])
+            products, err_info_list = self.get_all_product_info_threaded(category['link'], category['name'])
+            err_info_list_all.extend(err_info_list)
             if products:
                 product_list.extend(products)
 
         with ThreadPoolExecutor(max_workers=8) as executor:
             list(tqdm(executor.map(worker, self.categories), total=len(self.categories)))
 
-        return product_list
+        return product_list, err_info_list_all
 
     def save_to_csv(self, products):
         products_df = pd.DataFrame(products)
@@ -150,7 +176,12 @@ class DischemScraper:
         plt.show()
 
 if __name__ == "__main__":
-    scraper = DischemScraper()
-    product_list = scraper.scrape_categories_threaded()
+    scraper = DischemScraper(['Health'])
+    product_list, err_prod_info_all = scraper.scrape_categories_threaded()
+    print('Total products downloaded: ', len(product_list))
+    print('Total error products: ', len(err_prod_info_all))
+    print('Error products: ')
+    for err_prod_info in err_prod_info_all:
+        print(err_prod_info['name'], err_prod_info['link'])
     scraper.save_to_csv(product_list)
     # scraper.plot_runtimes(runtime_all_links, runtime_product_info)
